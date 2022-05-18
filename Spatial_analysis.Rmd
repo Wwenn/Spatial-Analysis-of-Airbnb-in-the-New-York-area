@@ -1,0 +1,672 @@
+---
+title: "Spatial-Analysis-of-Airbnb-in-the-New-York-area"
+subtitle: "2021/22"
+author: "Wen Wen"
+date: "16/12/2021"
+output: 
+  html_document:
+    toc: true 
+    toc_depth: 4  
+    df_print: paged
+---
+Word count: 2823
+
+## **Introduction**
+![New York Map](NYC_Downtown_Manhattan_Skyline_seen_from_Paulus_Hook_2019-12-20_IMG_7347_FRD_(cropped).jpg)
+Airbnb was founded in 2008 to make money by charging guests and hosts for short-term rentals of private homes or flats booked through the Airbnb website. It started with a prototype in San Francisco and expanded rapidly, and in many local markets the arrival and expansion of Airbnb has sparked debate about what factors in the local market can influence its listings and prices
+
+## **Part 1 – Common**
+Part 1 combines New York AIrbnb listing data with New York City demographic data for analysis, focusing on the distribution of Airbnb listings and prices in New York, as well as a preliminary economic analysis of each region of New York in conjunction with some economic variables.
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+if(!require("dplyr")) install.packages("dplyr")
+if(!require("stplanr")) install.packages("stplanr")
+if(!require("tmap")) install.packages("tmap")
+if(!require("ggraph")) install.packages("ggraph")
+if(!require("jsonlite")) install.packages("jsonlite")
+if(!require("data.table")) install.packages("data.table")
+if(!require("classInt")) install.packages("classInt")
+if(!require("httr")) install.packages("httr")
+if(!require("tidyverse")) install.packages("tidyverse")
+if(!require("corrplot")) install.packages("corrplot")
+if(!require("igraph")) install.packages("igraph")
+if(!require("tidygraph")) install.packages("tidygraph")
+if(!require("ggraph")) install.packages("ggraph")
+if(!require("osmdata")) install.packages("osmdata")
+if(!require("tidyverse")) install.packages("tidyverse")
+if(!require("sf")) install.packages("sf")
+if(!require("ggmap")) install.packages("ggmap")
+if(!require("dplyr")) install.packages("dplyr")
+if(!require("leaflet")) install.packages("leaflet") 
+if(!require("ggplot2")) install.packages("ggplot2") 
+if(!require("RColorBrewer")) install.packages("RColorBrewer")  # nice colour palette
+if(!require("ggpmisc")) install.packages("ggpmisc") 
+if(!require("scales")) install.packages("scales") 
+if(!require("cowplot")) install.packages("cowplot") 
+```
+### **1.1 Collecting and importing the data**
+#### 1.1.1 Import and explore
+For this project,we need to use 2 datasets. Firstly, I will explore the data of Airbnb listings in NYC from http://insideairbnb.com/ This dataset includes information on 37,713 Airbnb. Then we will explore the data of demographic for New York City Neighborhood(https://geodacenter.github.io/data-and-lab/.) from American Community Survey,which includes 195 observations and 98 variable.
+```{r importdata,include=FALSE}
+getwd()
+# add the polygons of New York City to the environment
+nyc <- read_sf("data/nycnhood_acs/NYC_Nhood ACS2008_12.shp")
+listings <- read_csv("data/listings.csv")
+```
+### **1.2 Preparing the data**
+In order to ease the later analysis stage, the dataframe will be reduced to smaller subset to help us analyze thr pricing by area, so I started by eliminating a portion of the data that will not be used in the next analysis, e.g., number of reviews, names of household, etc. To get the best result, we also need to remove some of outliers. First, consider that the price of a listing is not only related to its location, but also to its room type, for example, a private room in the same location will often be more expensive than a share room. Since there are many factors that influence prices, we cannot just drop outliers for prices in the Airbnb dataset here. We obtained a general overview of the data based on the statistical summary, according to which there are some listings with zero prices, and as this is not possible in reality, regarding the outliers, we initially remove only the parts with zero prices.
+```{r data cleaning, include=FALSE}
+listings_area<-listings%>%
+  select(id, name, host_id, neighbourhood_group, neighbourhood, latitude, longitude, room_type, price, number_of_reviews)
+# Statistical summary of pricing and property type by neighborhood group
+#listings_area %>%
+#  group_by(neighbourhood_group) %>%
+#  summarize(min_price = min(price), max_price = max(price), avg_price = mean(price))
+#Visualizing outliers in R
+#install.packages("ggstatsplot")
+# Load the package
+#library(ggstatsplot)
+# install.packages("outliers")
+#library(outliers)
+#test <- grubbs.test(listings_area$price)
+
+# Load the dataset 
+#data("listing_area")
+# Create a boxplot of the dataset, outliers are shown as two distinct points
+#boxplot(listings_area$price)$out
+#Create a boxplot that labels the outliers  
+#outliers <- boxplot(listings_area$price, plot=FALSE)$out
+#lower_bound <- quantile(listings_area$price, 0.01)
+
+#upper_bound <- quantile(listings_area$price, 0.99)
+
+#outlier_ind <- which(listings_area$price < lower_bound | listings_area$price > upper_bound)
+#outlier_ind
+#listings_area[outlier_ind, "price"]
+```
+
+```{r drop0}
+listings_area <- subset(listings_area, price > 0)
+```
+
+#### 1.2.1 Changing CRS
+Originally, the NYC neighborhood data shapefiles was in the Marcator (WGS84) projection. This is common when downloading data. However, this projection is in degrees and difficult to interperet. 
+
+So to simplify the next analysis, we also needed to change the CRS of the data, and we chose to base it on the New York CRS provided by QGIS(NAD83).
+As part of the project, We also needed to calculate the number of listings per Neighborhood Listing Area (NTA) and the average price per NTA. However, Airbnb’s listing data is in the csv format and there is no CRS associated, so we need to convert this into a shapefile format and define a projection that is the same as the NYC neighborhood data.Therefore, I need to change the CRS to a projection in meters so that it does not distort distances and areas.“ NAD83/Long Island, NY “ is the projection format that I chose for this analysis, as it had the least distortion in terms of area, direction, and distance for NYC.
+
+``` {r creat spatial point&transform, include=FALSE}
+# create spatial points and pts from coordinates
+listings_sf <- listings_area  %>%
+  st_as_sf(coords = c("longitude","latitude")) %>%
+  st_set_crs(4326)%>%
+  st_transform(32118)
+#head(listings_sf)
+nyc = st_transform(nyc,32118)
+
+listings_sf<-cbind(listings_sf, st_coordinates(listings_sf))
+#extent(nyc)
+#extent(listings_sf)
+#crs(nyc)
+#crs(listings_sf)
+```
+
+### **1.3 Discussion of the data**
+Airbnb listings in NYC has all the basic information about each airbnb in NYC, includs host's information, geometry information, room type, review and price etc.
+Demographic for New York City neighbourhhod from ACS(2008-2012) shows the information about population,education level, employment,poverty and Gini-coeffient in each neighborhood of NYC.
+It is worth noting that Airbnb's listing information, on an individual house basis, and a portion of the ACS information on a per-neighborhood basis, such as the number of Asians per neighborhood. So in order to better combine the two datasets for economic analysis, we present the information of New York Airbnb listings at neighborhood level in the next analysis
+
+```{r plot NYC,include=FALSE}
+nplot = ggplot() + 
+  geom_sf(data = nyc, size = 0.1, color = "black")  +
+  coord_sf() 
+p<-nplot +  geom_sf(data = listings_sf,size = 0.5, inherit.aes = FALSE,alpha=0.5)
+
+#tmap_mode("view")
+#tm_basemap() +
+ # tm_shape(listings_sf) +
+ # tm_symbols(id = "commonName", scale = .1)
+```
+
+### **1.4 Mapping and Data visualisation**
+Using the New York City neighbourhoods layer obtained from
+https://geodacenter.github.io/data-and-lab/. 
+
+#### 1.4.1 Airbnb in New York City at Neighbourhood Level
+This part will show Airbnb in New York City at the Neighbourhood level from 2 aspects: the number of listings and average price. Both maps will use the Jenks natural breaks classification method, one of the data clustering methods designed to determine the best arrangement of values in different classes. Best ranges imply the ranges where like areas are grouped. In this case, each neighbourhood has a different number of Airbnb and each Airbnb has different price, so for a beautiful and reasonable visualization, "Jenks" is our choice of classification method.
+
+**Number of Airbnb listings in New York City at Neighbourhood Level**
+```{r count of listing by neighbourhood,include=FALSE}
+cout_listing <- listings %>%
+  count(neighbourhood)%>%
+  rename(Neighborhood = neighbourhood)
+cout_listing
+```
+First of all, we merge the ACS dataset and listing data set, then I obtain a count of listings by neighbourhood, and show the total number of listings per NTA with different colors for different number of listings range by using “tmap” and I select the pop up id to the name of neighborhood.
+```{r number of listings per NTA,include=FALSE}
+listing_districts <- st_join(nyc, listings_sf)
+listingcout_nta <- listing_districts  %>%
+  count(ntaname)%>%
+  rename(NTA = ntaname)
+head(listingcout_nta)
+```
+
+```{r plot Number of listings per NTA}
+# find the breaks
+brks <- classIntervals(listingcout_nta$n, 6, style = "jenks")
+# plot
+
+tmap_mode("view")
+
+Map1.1<-tm_basemap() +
+  tm_shape(listingcout_nta) +
+  tm_fill(col= "n",
+          id = "NTA", # set the pop up id to the number of journeys
+           palette = "magma",# purple to yellow palette
+           direction = -1,
+           breaks = brks$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+           alpha = 0.5, # transparency
+           # set colour fill to number of journeys
+           title = "Number of listings" )+
+  tm_borders()+
+  tm_layout(title= "Map1.1 Number of listings per NTA",
+            legend.outside = TRUE, legend.outside.position = "right") +
+  tm_scale_bar(position=c("left", "bottom"))
+#  tm_compass()
+Map1.1  
+
+```
+
+**Map 1.1: Number of listings per Neighbourhood Tabulation Areas (NTA)**
+
+Following the map 1.1 Brookly and Manhattan have most Airbnb listings, suggesting there is more demand for these boroughs especially since Brooklyn is the most populous borough and Manhattan is the center of NYC. Most of New York’s attractions are also located in this area.
+
+##### Average price of Airbnb listings in New York City at Neighbourhood Level
+```{r Classification listings by room type,include=FALSE}
+listings_meanprice <- listing_districts %>% 
+  group_by(ntaname,ntacode) %>% # group at district level
+  summarise(count = n(),  # create count
+            mean_price = mean(price)) # average price
+#head(listings_meanprice)
+#head(listing_districts)
+
+roomtype<- listing_districts%>%
+  group_by(room_type,ntaname)%>%
+  summarise(count = n(),  # create count
+            meanprice = mean(price)) 
+Entire_home<-roomtype[1:190,]
+Private_room<-roomtype[191:396,]
+share_room<-roomtype[397:516,]
+```
+or the map of average price per NTA, I used the previously merged data, and I classify it by NTA name and calculate the average price per NTA with different colors for different price range, using “tmap” and setting the pop up id to the information of NTA.
+
+However, it is worth noting that when looking at average Airbnb prices per neighbourhood, it is important to consider that Airbnb prices are influenced by the type of room, and that an area with too many shared rooms will have a very different average price than a neighbouring area with the same number of listings. So in order to compare the average Airbnb prices for each NTA in New York City, we need to further discuss the average price of each room type in each neighbourhood (Due to the small number of rooms in the hotel room category, we have combined the hotel room and private room to form the private category in view of the similarity of the facilities).
+
+```{r plot Average price of Airbnb}
+listings_meanprice<-na.omit(listings_meanprice,na.action="omit")
+
+tmap_mode("view")
+
+#listings_mean_price<-na.omit(listings_meanprice$mean_price)
+brks <- classIntervals(listings_meanprice$mean_price, 6,style = "jenks")
+
+p0<-tm_basemap() +
+  tm_shape(listings_meanprice) +
+  tm_fill(id = "ntaname", # set the pop up id to the number of journeys
+           palette = "OrRd",# purple to yellow palette
+           direction = -1,
+           breaks = brks$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+           col= "mean_price", # set colour fill to number of journeys
+           title = "Average Price of Airbnb per NTA $")
+ 
+
+
+brks1 <- classIntervals(Entire_home$meanprice, 6, style = "jenks")
+p1<-tm_basemap() +
+  tm_shape(Entire_home) +
+  tm_fill(id = "ntaname", # set the pop up id to the number of journeys
+           palette = "OrRd",# purple to yellow palette
+           direction = -1,
+           breaks = brks1$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of line
+           col= "meanprice", # set colour fill to number of journeys
+           title = "Average price of Entire home/apt $")  
+
+
+brks2 <- classIntervals(Private_room$meanprice, 6, style = "jenks")
+p2<-tm_basemap() +
+  tm_shape(Private_room) +
+  tm_fill(id = "ntaname", # set the pop up id to the number of journeys
+           palette = "OrRd",# purple to yellow palette
+           direction = -1,
+           breaks = brks2$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+           # transparency
+           col= "meanprice", # set colour fill to number of journeys
+           title = "Average price of Private room $") 
+
+
+brks3 <- classIntervals(share_room$meanprice, 6, style = "jenks")
+p3<-tm_basemap() +
+  tm_shape(share_room) +
+  tm_fill(col= "meanprice",
+          id = "NTA", # set the pop up id to the number of journeys
+           palette = "OrRd",# purple to yellow palette
+           direction = -1,
+           breaks = brks3$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+            # transparency
+           # set colour fill to number of journeys
+           title = "Average Price of Share room $")
+
+tmap_arrange(p0,p1,p2,p3,nrow=2)
+
+```
+
+**Map 1.2: Average price per NTA.**
+
+Following map1.2, the highest Airbnb average price is in Manhattan for all room types. The most expensive listings based on average price ten to be entire homes in Manhattan. The distribution of share room's average price shows no share room Airbnb in some suburbs of New York; this explains why, on the first map in the first column, the average price of Airbnb in some New York suburbs is not very low, because there are no quieter priced share rooms to pull down the average price of all housing types.
+```{r plot average of price(ggplot),include=FALSE}
+map4 <- ggplot()+
+  geom_sf(data = listings_meanprice, inherit.aes = FALSE, aes(fill = mean_price)) + # add the district level housing price 
+  scale_fill_viridis("Price", direction = -1,option="OrRd",labels = scales::dollar_format(prefix = "$"))+ 
+  labs(title="Average price per Neighbourhood Tabulation Areas ")+
+  xlab("") +
+  ylab("") +
+  theme_minimal() 
+#map4
+
+```
+
+##### Further discussion based on Map 1.1 and Map 1.2 
+
+The two maps above discuss the distribution and prices of Airbnb listings and provide a basic initial analysis of Airbnb in New York, giving us an idea of the most expensive areas and the most concentrated areas of Airbnb in New York. Compared to other "new" form of spatial data, InsideAirbnb's data is very useful, as it provides information on the number and frequency of reviews and recent reviews, in addition to basic listing information, which can be useful for further research on the relationship between quality listings and ratings. However, the downside of this data is also obvious. Considering the protection of privacy, the addresses of many listings are inaccurate, which can bring some bias to our analysis.
+There is much room for further research on Airbnb's data, such as for user groups. Since users on Airbnb can be divided into hosts and guests, and hosts can be guests on Airbnb when they travel on their own, we can also study the emerging hosts and guests' connections on Airbnb from the perspective of social networks. This is important for research related to maintaining user growth on Airbnb and maintaining and building trust between Airbnb users.
+
+#### 1.4.2. Socio-economic variables from the ACS data
+
+After analysing the price and regional distribution of Airbnb listings, we will try to combine the ACS data to conduct some preliminary socio-economic research. In this section, I have chosen two variables, the unemployment rate and the Gini index to analyse in conjunction with Airbnb's prices. Since the unemployment rate and Gini index provided by the ACS are based on each neighbourhood in New York, in the following analysis our prices are also the average price of listings in each neighbourhood.
+```{r select socio-economic variable,include=FALSE}
+head(listing_districts)
+socio_eco<- listing_districts [,c("UEMPRATE","gini","ntaname")]
+socio_eco<-unique(socio_eco)
+
+head(socio_eco)
+```
+
+```{r plot socio variable}
+socio_eco$gini<-as.numeric(socio_eco$gini)
+#socio_gini$gini[is.na(socio_gini$gini)]<-0
+socio_eco<-na.omit(socio_eco,na.action="omit")
+
+# find the breaks
+brks1 <- classIntervals(socio_eco$gini, 5, style = "jenks")
+brks2 <- classIntervals(socio_eco$UEMPRATE, 5, style = "jenks")
+# plot
+Map2<-tm_basemap() +
+  tm_shape(socio_eco) +
+  tm_fill(id = "ntaname", 
+           palette = "YlGn",
+           direction = -1,
+           breaks = brks1$brks, 
+           lwd = "share_trips", 
+           scale = 9,
+           title.lwd = "Share trips (%)",
+           alpha = 0.5, 
+           col= "gini", 
+           title = "Gini Coefficient") +
+  tm_symbols(id = "UEMPRATE", palette = "OrRd",  scale = .4,breaks = brks2$brks,col="UEMPRATE",title.col="Unemployment Rate") + # names of stations as pop up id
+  tm_scale_bar() 
+```
+
+```{r plot Map2}
+tmap_mode("view")
+Map2 
+```
+
+**Map2: Spatial distribution of  Gini index and unemployment rate** 
+
+This map shows the Gini index and unemployment rate for each NTA. The Gini coefficient is an indicator of statistical dispersion designed to represent income inequality/wealth inequality, so these two social variables can determine the relationship between inequality and unemployment in each neighbourhood.
+As can be seen on this map, Manhattan neighbourhoods have a higher Gini index and lower unemployment rates, and inequality is high despite the fact that most people are employed. Neighbourhoods in Queens and Staten Island have low Gini indexes and low unemployment rates. This means that the gap between rich and poor in these two boroughs is small. In New York City, the Bronx has a high unemployment rate.
+We could not find a specific relationship between the Gini coefficient and the unemployment rate, as unemployment varies from borough to borough, but based on this data we can assume that in the future Airbnb will probably cluster in Manhattan, where the gap between rich and poor is high and the average price of a room is the highest (Map1.2), so it has more high-spending people. And it is also possible that Airbnb will cluster in Queens and Staten Island, where the unemployment rate is low, so people usually have a stable income.
+
+####  1.4.3. Combining Data sets
+
+```{r Combining Data sets}
+listings_meanprice$logprice <- log(listings_meanprice$mean_price)
+log_price<-listings_meanprice[,c("logprice","ntaname")]
+log_price<-na.omit(log_price,na.action="omit")
+brks1 <- classIntervals(log_price$logprice , 5, style = "jenks")
+brks2 <- classIntervals(socio_eco$UEMPRATE, 5, style = "jenks")
+# plot
+tmap_mode("view")
+tm_basemap() +
+  tm_shape(socio_eco) +
+  tm_fill(id = "", # set the pop up id to the number of journeys
+           palette = "YlGn",# purple to yellow palette
+           direction = -1,
+           breaks = brks2$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+           alpha = 0.5, # transparency
+           col= "UEMPRATE", # set colour fill to number of journeys
+           title = "Unemployment Rate") +
+  tm_shape(log_price) + # add the stations for context
+  tm_symbols(id = "ntaname", palette = "OrRd", scale = .4,breaks = brks1$brks,title.col ="Log Price",col="logprice",shapes.legend = "logprice") + # names of stations as pop up id
+  tm_scale_bar() 
+```
+**Map 3: Ln of price of Airbnbs in NYC  with unemployment rate**
+
+This map shows the average price and the logarithm of the unemployment rate for each NTA. Therefore, these two variables can determine the relationship between Airbnb prices and unemployment rates in each neighborhood.
+From this map, it can be seen that the Manhattan borough has high Airbnb prices and a low unemployment rate, indicating that there is more demand in this borough because Manhattan is the centre of New York City and it has the richest people in New York. The Bronx has a high unemployment rate in the neighbourhood, but Airbnb prices here are not low, which is a bit strange, probably because the New York Yankees are here and the Yankees are important to Americans, which also influences the local Airbnb prices.
+
+This map does not explain the exact relationship between Airbnb prices and the unemployment rate. So we will discuss in depth which social variables have an impact on the price of Airbnb in the final part of this article.
+
+## **Part 2 – Analysis**
+
+### **2 .1. Potential raster data**
+
+This section focuses on the social and economic analysis of New York in the context of the ACS data, discussing mainly the impact of some variables on the price of housing. It is worth noting that New York's property tax is very distinctive in that it is arguably very favourable to the wealthy.
+
+New York levies an annual tax at a fixed rate on all homes based on market valuation. If a building has more than three residential units, the tax authorities will increase the valuation of the building by a certain percentage, taking into account the rental market price. The problem is that there are very few top quality flats for rent in the rental market and the tax authorities have to value them by reference to ordinary residential rents, resulting in a "price reduction" for luxury properties and avoiding large amounts of property tax. For example, the penthouse in One57 was valued at $6.5 million, despite the fact that it sold for 100 million dollar. So it would be very helpful for our research if we could have raster data of tax for New York such as tax lots (Mappluto).
+
+### **2.2. OpenStreetMap data** 
+
+#### 2.2.1 Chose art centre as an amenity to query in OpenStreetMap 
+
+```{r amenities,include=FALSE}
+library(magrittr)
+q <- getbb("New York City") %>%
+      opq() %>%
+       add_osm_feature("amenity", "arts_centre")
+
+str(q) #query structure
+cafe <- osmdata_sf(q)
+a<-cafe$osm_points
+
+a <- a %>% dplyr::mutate(lon=sf::st_coordinates(.)[,1],
+                         lat=sf::st_coordinates(.)[,2])
+a = st_transform(a,32118)
+
+nyc_map <- get_map(getbb("New York City"), maptype = "toner-background", source = "stamen")
+nyc_map <- ggmap(nyc_map, extent="device", legend="none")
+
+
+nyc_map <- nyc_map +scale_fill_gradientn(colours= brewer.pal(7,"Spectral"))+ 
+  stat_density2d(data=a,aes(x=lon, y=lat, fill=..level.., alpha = ..level..),geom="polygon")+scale_alpha(guide = "none")
+
+```
+
+
+
+```{r plot heat map}
+nyc_map
+```
+
+**Map 4:Heatmap of Art Centre**
+
+#### 2.2.2 Create buffers around art centre. 
+Find out which Airbnbs are 100 metres (or less) from art_centre. How many Airbnbs are within this spatial range? Would this help you decide where to choose an Airbnb if you were going to NYC? Justify by referring to the opportunities and limitations of OSM data.
+```{r buffer count,include=FALSE}
+b <- st_transform(a,st_crs(listings_sf))
+buffer100 <- st_buffer(b,dist = 100)
+buffer_inter <-st_intersection(buffer100,listings_sf)
+#head(buffer_inter)
+#count <- buffer_inter%%
+#  dplyr::group_by(osm_id)%%count
+
+count1 <- buffer_inter %>% 
+  group_by(name.1) %>% # group at district level
+  summarise(count = n())
+count1
+```
+After getting the heat map of the art centre, buffer was created around the art centre and 882 airbnb's were found that were only 100m away from the art centre. this data is valuable for people who like art and if one of me were to go to NYC I would also look for airbnb's that are close to the art centre and have a strong art scene to stay in.
+
+Here we are using OSM data, Osm data is a free source of high resolution GIS vector data, his data is flexible and can be updated in the event of new shops opening, bridges collapsing etc.  Updates are faster than the average commercial and government maps. But OSM data also has some limitation, for example because OSM works in a public way similar to Wikipedia, almost all features can be edited by any member of the user community, but there goes no systematic quality checking of the data. We should therefore be careful when using OSM information for mission-critical functions. Also OSM data is sometimes relevant to the interests of contributors, and in 2013, Stephens lamented that there were multiple tags for marking sexual entertainment venues in OSM, whereas proposals for tags denoting hospice services and daytime childcare had floundered.
+OSM data will not be used in the analysis that follows, but here we need to emphasise the importance of OSM data, which, despite its challenges, can provide a great deal of sharing in crisis response, such as the creation of a detailed national geographic data available in OSM by volunteers from around the world after the 2010 earthquake in Haiti, which provided a very useful map for the influx of humanitarian aid workers into the country.
+
+### **2.3 Descriptive Spatial Analysis** 
+
+In this section, we discuss the impact of Airbnb prices on New York in the context of two datasets and econometric models.
+
+First, it is hypothesised that unemployment, educational attainment, wealth and poverty, and the Gini index are associated with Airbnb prices in each neighbourhood. To test this hypothesis, I first defined educational attainment initially as the total number of undergraduate/graduate/PhD students in each neighbourhood divided by the total population of the neighbourhood to obtain the three education-related variables, and then defined wealth status as the number of people in each neighbourhood with a poverty ratio greater than one divided by the number of people in the district, i.e. the total population of the neighbourhood. I then did a correlation coefficient analysis on all the variables previously treated plus airbnb prices, leaving the four most important variables after excluding the uncorrelated ones: poverty population density, unemployment rate, undergraduate rate, and Gini coefficient.
+
+```{r set spatial data,include=FALSE}
+df <- listing_districts %>%
+  select(UEMPRATE,poptot,poor,okay,master,doctorate,college,bachelor,gini,popdty,price,ntaname)
+#head(df)
+df$gini<-as.numeric(df$gini)
+#na.omit(df$gini)
+df$popdty<-as.numeric(df$popdty)
+#df$mean_price <- listings_meanprice$mean_price
+
+df<- df%>%
+  group_by(ntaname,UEMPRATE,poptot,poor,okay,master,doctorate,college,bachelor,gini,popdty)%>%
+  summarise(mean_price=mean(price))
+df$bachelor_rate<-df$bachelor/df$poptot
+df$master_rate<-df$master/df$poptot
+df$doctorate_rate <-df$doctorate/df$poptot
+df$poor_rate <- df$poor/df$poptot
+df$okay_rate <- df$okay/df$poptot
+df$logprice<-log(df$mean_price)
+df<-na.omit(df,na.action="omit")
+```
+
+```{r correlation1}
+ddf_levels <- df %>% select( poor_rate, master_rate, doctorate_rate, bachelor_rate,okay_rate,gini,UEMPRATE,mean_price,logprice)
+ddf_levels<-ddf_levels%>% st_drop_geometry() 
+#head(ddf_levels)
+#pairs(ddf_levels)
+correlations <- cor(ddf_levels,use = "complete.obs")
+par(mfrow=c(1,2))
+c1<-corrplot(correlations,tl.col = "black")
+ddf2<-ddf_levels %>% select(poor_rate,bachelor_rate,gini,UEMPRATE,mean_price)
+correlations2 <- cor(ddf2,use = "complete.obs")
+c2<-corrplot(correlations2,tl.col = "black")
+
+```
+
+After selecting the four variables we will create scatter plots and maps to find their relationship with Airbnb prices
+
+
+```{r Visualise the datasets,include=FALSE}
+spatial_data<-listing_districts[,c("UEMPRATE", "poor","okay","bachelor","poptot","X","Y")]
+spatial_data$education<-spatial_data$bachelor/spatial_data$poptot
+spatial_data$Poor<-spatial_data$poor/spatial_data$poptot
+spatial_data<-na.omit(spatial_data,na.action="omit")
+library(ggplot2)
+library(cowplot)
+
+a<-ggplot()+
+  geom_sf(data = nyc, size = 0.1, color = "black") + theme_minimal()+
+  scale_fill_identity()+
+  geom_point(data=spatial_data,mapping=aes(x=X,y=Y,color=Poor),size=.1)+
+  ggtitle("Poor")+
+  theme(line = element_blank(), 
+        rect = element_blank(), 
+        axis.text=element_blank())   
+
+b<-ggplot()+
+  geom_sf(data = nyc, size = 0.1, color = "black") +
+  theme_minimal()+
+  geom_point(data=spatial_data,mapping=aes(x=X,y=Y,color=education),size=.1)+
+  ggtitle("education")+
+  theme(line = element_blank(), 
+        rect = element_blank(), 
+        axis.text=element_blank())
+
+c<-ggplot()+
+  geom_sf(data = nyc, size = 0.1, color = "black") +
+  theme_minimal()+
+  scale_fill_identity()+
+  geom_point(data=spatial_data,mapping=aes(x=X,y=Y,color=okay),size=.1)+
+  ggtitle("Gini")+
+  theme(line = element_blank(), 
+        rect = element_blank(), 
+        axis.text=element_blank())
+
+d<-ggplot()+
+  geom_sf(data = nyc, size = 0.1, color = "black") +
+  theme_minimal()+
+  scale_fill_identity()+
+  geom_point(data=spatial_data,mapping=aes(x=X,y=Y,color=UEMPRATE),size=.1)+
+  ggtitle("Unemployment Rate")+
+  theme(line = element_blank(), 
+        rect = element_blank(), 
+        axis.text=element_blank(),
+        axis.ticks=element_blank())
+plot_grid(a,b,c,d,ncol=2, nrow=2)
+
+```
+
+```{r Option3}
+df2<-df %>% select(poor_rate,bachelor_rate,gini,UEMPRATE,mean_price)
+brks1 <- classIntervals(df2$mean_price , 5, style = "jenks")
+brks2 <- classIntervals(df2$UEMPRATE, 5, style = "jenks")
+brks3 <- classIntervals(df2$bachelor_rate, 5, style = "jenks")
+brks4 <- classIntervals(df2$poor_rate, 5, style = "jenks")
+brks5 <- classIntervals(df2$gini, 5, style = "jenks")
+# plot
+
+m1<-tm_basemap() +
+  tm_shape(df2) +
+  tm_fill(id = "mean_price", # set the pop up id to the number of journeys
+           palette = "YlGn",# purple to yellow palette
+           direction = -1,
+           breaks = brks2$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+           alpha = 0.5, # transparency
+           col= "UEMPRATE", # set colour fill to number of journeys
+           title = "Unemployment Rate") +
+  tm_symbols( palette = "OrRd", scale = .4,breaks = brks1$brks,title.col ="mean price",col="mean_price",shapes.legend = "mean_price") + # names of stations as pop up id
+  tm_scale_bar() 
+m2<-tm_basemap() +
+  tm_shape(df2) +
+  tm_fill(id = "", # set the pop up id to the number of journeys
+           palette = "YlGn",# purple to yellow palette
+           direction = -1,
+           breaks = brks3$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+           alpha = 0.5, # transparency
+           col= "bachelor_rate", # set colour fill to number of journeys
+           title = "Bachelor Rate") +
+  tm_symbols( palette = "OrRd", scale = .4,breaks = brks1$brks,title.col ="mean price",col="mean_price",shapes.legend = "mean_price") + # names of stations as pop up id
+  tm_scale_bar() 
+m3<-tm_basemap() +
+  tm_shape(df2) +
+  tm_fill(id = "", # set the pop up id to the number of journeys
+           palette = "YlGn",# purple to yellow palette
+           direction = -1,
+           breaks = brks4$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+           alpha = 0.5, # transparency
+           col= "poor_rate", # set colour fill to number of journeys
+           title = "Poor Pate") +
+  tm_symbols( palette = "OrRd", scale = .4,breaks = brks1$brks,title.col ="mean price",col="mean_price",shapes.legend = "mean_price") + # names of stations as pop up id
+  tm_scale_bar() 
+m4<-tm_basemap() +
+  tm_shape(df2) +
+  tm_fill(id = "mean_price", # set the pop up id to the number of journeys
+           palette = "YlGn",# purple to yellow palette
+           direction = -1,
+           breaks = brks5$brks, # jenks breaks defined earlier
+           lwd = "share_trips", # share trips colour
+           scale = 9,
+           title.lwd = "Share trips (%)", # set thickness of lines
+           alpha = 0.5, # transparency
+           col= "gini", # set colour fill to number of journeys
+           title = "Gini index") +
+  tm_symbols( palette = "OrRd", scale = .4,breaks = brks1$brks,title.col ="mean price",col="mean_price",shapes.legend = "mean_price") + # names of stations as pop up id
+  tm_scale_bar() 
+tmap_arrange(m1,m2,m3,m4,nrow=2)
+```
+
+
+We used the Airbnb price as the dependent variable and the socio-economie variable as the independent variable. Using the equation:$y =\alpha + \beta x+ \epsilon$. 
+
+
+```{r scatter plot}
+p1<- ggplot(ddf_levels, aes(y=mean_price, x=poor_rate)) + 
+  geom_point()+
+  labs(x = "Poor population density",y= "Average price") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 100)) +
+  scale_x_continuous(labels=comma)  + 
+  geom_smooth(method='lm', formula= y~x+x**2) + 
+  stat_poly_eq(formula = y ~ x+x**2, 
+                eq.with.lhs = "italic(hat(y))~`=`~",
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                parse = TRUE)
+p2<- ggplot(ddf_levels, aes(y=bachelor_rate,x=mean_price)) + 
+  geom_point()+
+  labs(x="Bachelor population density",y = "Average price") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 100)) +
+  scale_x_continuous(labels=comma)  + 
+  geom_smooth(method='lm', formula= y~x )+ 
+  stat_poly_eq(formula = y ~ x, 
+                eq.with.lhs = "italic(hat(y))~`=`~",
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                parse = TRUE)
+
+p3<- ggplot(ddf_levels, aes(y=mean_price,x=UEMPRATE)) + 
+  geom_point()+
+  labs(x="Unemployed rate",y = "Average price",) + 
+  scale_y_continuous(labels = scales::percent_format(scale = 100)) +
+  scale_x_continuous(labels=comma)  + 
+  geom_smooth(method='lm', formula= y~x) + 
+  stat_poly_eq(formula = y ~ x, 
+                eq.with.lhs = "italic(hat(y))~`=`~",
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~")), 
+                parse = TRUE)
+
+p4<- ggplot(ddf_levels, aes(y=mean_price, x=gini)) + 
+  geom_point()+
+  labs(x ="Gini index" ,y="Average price") + 
+  scale_y_continuous(labels = scales::percent_format(scale = 100)) +
+  scale_x_continuous(labels=comma)  + 
+  geom_smooth(method='lm', formula= y~x) + 
+  stat_poly_eq(formula = y ~ x, 
+                eq.with.lhs = "italic(hat(y))~`=`~",
+                aes(label = paste(..eq.label.., ..rr.label.., sep = "~~~~")), 
+                parse = TRUE)
+
+plot_grid(p1,p2,p3,p4)
+```
+
+The map allows us to observe that unemployment and poverty rates are low in areas with high prices, high levels of education as well as a large gap between rich and poor. The scatter plot shows that the price of housing increases as the unemployment and poverty rates decrease, and decreases as the number of undergraduates and the gap between rich and poor decreases.However, it is worth raising that the R-values for both poverty and unemployment rates are small, both less than 0.3, suggesting that their correlation with airbnb prices is weak. Airbnb prices are moderately correlated with education. For policy makers, it is important to emphasise that educational attainment has a positive impact on the price of Airbnb listings.
+
+
+## **Conclusion**
+
+The above analysis suggests that Airbnb can exacerbate the neighbourhood changes associated with gentrification. As with other analyses, however, there are some limitations to this study. The first is that the analysis is limited to one city (New York City), which may not allow us to generalise the results to other destinations. Secondly, the study only mentions the relationship between Airbnb prices and other variables; we could also examine the relationship between the number of Airbnb listings and other variables. Furthermore, the number and price of Airbnb listings could in turn affect cities, considering that a large number of Airbnb compresses the rental market, such as unemployment and inequality.
+
+
+## **References**
+
+1.Bion, Ricardo & Chang, Robert & Goodman, Jason. (2017). How R helps Airbnb make the most of its data. 10.7287/peerj.preprints.3182v1. 
+
+2.Josh Bivens,January 30, 2019.The economic costs and benefits of Airbnb
+https://www.epi.org/publication/the-economic-costs-and-benefits-of-airbnb-no-reason-for-local-policymakers-to-let-airbnb-bypass-tax-or-regulatory-obligations/
+
+3."OpenStreetMap and its use as open data"
+https://www.e-education.psu.edu/geog585/node/738
+
+4.Dogru, Tarik & Zhang, Yingsha & Suess, Courtney & Mody, Makarand & Bulut, Umit & Sirakaya-Turk, Ercan. (2020). What caused the rise of Airbnb? An examination of key macroeconomic factors. Tourism Management. 81. 104134. 10.1016/j.tourman.2020.104134. 
